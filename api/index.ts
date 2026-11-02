@@ -70,42 +70,28 @@ async function generateManufacturingJson(prompt: string): Promise<any> {
     throw new Error('GEMINI_API_KEY가 설정되지 않았습니다.');
   }
 
-  // 최신 안정 모델 순차 시도
-  const modelsToTry: Array<{ model: string; thinkingLevel?: ThinkingLevel }> = [
-    { model: 'gemini-3.8-flash', thinkingLevel: ThinkingLevel.LOW },
-    { model: 'gemini-2.5-flash' },
-  ];
-
-  let lastError: any = null;
-
-  for (const candidate of modelsToTry) {
-    try {
-      const config: any = {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: prompt,
+      config: {
         systemInstruction: SYSTEM_MANUFACTURING_PROMPT,
         responseMimeType: 'application/json',
-      };
-      if (candidate.thinkingLevel) {
-        config.thinkingConfig = { thinkingLevel: candidate.thinkingLevel };
-      }
+        thinkingConfig: { 
+          thinkingLevel: ThinkingLevel.LOW 
+        },
+      },
+    });
 
-      const response = await ai.models.generateContent({
-        model: candidate.model,
-        contents: prompt,
-        config,
-      });
-
-      const parsed = extractJson(response.text || '');
-      if (parsed) {
-        return parsed;
-      }
-      lastError = new Error('AI 응답 JSON 파싱에 실패했습니다.');
-    } catch (err: any) {
-      console.warn(`[Model ${candidate.model} failed]:`, err?.message || err);
-      lastError = err;
+    const parsed = extractJson(response.text || '');
+    if (parsed) {
+      return parsed;
     }
+    throw new Error('AI 응답 JSON 파싱에 실패했습니다.');
+  } catch (err: any) {
+    console.error('[Gemini 3.8 Flash Call Failed]:', err?.message || err);
+    throw err;
   }
-
-  throw lastError || new Error('AI 분석 요청 처리에 실패했습니다.');
 }
 
 // 1. Company Process Explorer API
