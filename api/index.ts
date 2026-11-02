@@ -66,34 +66,61 @@ function extractJson(rawText: string) {
 }
 
 async function generateManufacturingJson(prompt: string): Promise<any> {
+  // 지연 대기용 헬퍼 함수
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function generateManufacturingJson(prompt: string): Promise<any> {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error('GEMINI_API_KEY가 설정되지 않았습니다.');
   }
 
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        systemInstruction: SYSTEM_MANUFACTURING_PROMPT,
-        responseMimeType: 'application/json',
-        thinkingConfig: { 
-          thinkingLevel: ThinkingLevel.LOW 
-        },
-      },
-    });
+  // 트래픽 과부하 시 순차적으로 시도할 최신 지원 모델 목록
+  const candidates: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
+    { model: 'gemini-3.8-flash', thinkingLevel: ThinkingLevel.LOW },
+    { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+  ];
 
-    const parsed = extractJson(response.text || '');
-    if (parsed) {
-      return parsed;
+  let lastError: any = null;
+
+  for (const candidate of candidates) {
+    // 503 과부하 발생 시 1회 자동 재시도 (최대 2번 시도)
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const response = await ai.models.generateContent({
+          model: candidate.model,
+          contents: prompt,
+          config: {
+            systemInstruction: SYSTEM_MANUFACTURING_PROMPT,
+            responseMimeType: 'application/json',
+            thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
+          },
+        });
+
+        const parsed = extractJson(response.text || '');
+        if (parsed) {
+          return parsed;
+        }
+        lastError = new Error('AI 응답 JSON 파싱에 실패했습니다.');
+      } catch (err: any) {
+        const errMsg = err?.message || String(err);
+        const isUnavailable = errMsg.includes('503') || errMsg.includes('UNAVAILABLE') || errMsg.includes('high demand');
+
+        console.warn(`[${candidate.model} attempt ${attempt} failed]:`, errMsg);
+        lastError = err;
+
+        // 구글 서버 일시적 과부하(503)인 경우 1.5초 대기 후 재시도
+        if (isUnavailable && attempt < 2) {
+          await delay(1500);
+          continue;
+        }
+        break; // 다른 에러이거나 2회 실패 시 다음 대체 모델로 전환
+      }
     }
-    throw new Error('AI 응답 JSON 파싱에 실패했습니다.');
-  } catch (err: any) {
-    console.error('[Gemini 3.8 Flash Call Failed]:', err?.message || err);
-    throw err;
   }
-}
 
+  throw lastError || new Error('현재 구글 AI 서버 혼잡으로 응답 생성에 실패했습니다. 잠시 후 다시 시도해주세요.');
+}
+  
 // 1. Company Process Explorer API
 app.post(['/api/gemini/company-explorer', '/gemini/company-explorer'], async (req: Request, res: Response) => {
   try {
