@@ -70,24 +70,28 @@ async function generateManufacturingJson(prompt: string): Promise<any> {
     throw new Error('GEMINI_API_KEY가 설정되지 않았습니다.');
   }
 
-  // Google AI Studio 표준 최신 모델 적용
-  const modelsToTry: Array<{ model: string; thinkingLevel: ThinkingLevel }> = [
-    { model: 'gemini-3.1-flash-lite', thinkingLevel: ThinkingLevel.MINIMAL },
+  // 최신 안정 모델 순차 시도
+  const modelsToTry: Array<{ model: string; thinkingLevel?: ThinkingLevel }> = [
     { model: 'gemini-3.8-flash', thinkingLevel: ThinkingLevel.LOW },
+    { model: 'gemini-2.5-flash' },
   ];
 
   let lastError: any = null;
 
   for (const candidate of modelsToTry) {
     try {
+      const config: any = {
+        systemInstruction: SYSTEM_MANUFACTURING_PROMPT,
+        responseMimeType: 'application/json',
+      };
+      if (candidate.thinkingLevel) {
+        config.thinkingConfig = { thinkingLevel: candidate.thinkingLevel };
+      }
+
       const response = await ai.models.generateContent({
         model: candidate.model,
         contents: prompt,
-        config: {
-          systemInstruction: SYSTEM_MANUFACTURING_PROMPT,
-          responseMimeType: 'application/json',
-          thinkingConfig: { thinkingLevel: candidate.thinkingLevel },
-        },
+        config,
       });
 
       const parsed = extractJson(response.text || '');
@@ -201,3 +205,224 @@ ${userExperience ? userExperience.trim() : '지원자 이력 미입력'}
     "tech_stack_comment": "기술 매칭 분석",
     "domain_fit_score": 78,
     "domain_fit_comment": "도메인 적합도 평가"
+  },
+  "radar_metrics": [
+    { "subject": "설비·센서 연동(OT)", "score": 75, "fullMark": 100 },
+    { "subject": "시계열/비전 AI", "score": 85, "fullMark": 100 },
+    { "subject": "공정제어·품질(SPC)", "score": 70, "fullMark": 100 },
+    { "subject": "산업용 통신(OPC-UA/Modbus)", "score": 72, "fullMark": 100 },
+    { "subject": "현장 Takt Time 대응력", "score": 68, "fullMark": 100 },
+    { "subject": "시스템 아키텍처(MES/Edge)", "score": 80, "fullMark": 100 }
+  ],
+  "critical_gaps": ["보완해야 할 빈틈 3가지"],
+  "recommended_appeal_points": ["면접 어필 전략 3가지"]
+}
+`;
+
+    const parsed = await generateManufacturingJson(prompt);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('Job Diagnosis Error:', error);
+    res.status(500).json({ error: error.message || '공고 진단 중 오류가 발생했습니다.' });
+  }
+});
+
+// 3. BEI Probing & STAR / PREP API
+app.post(['/api/gemini/bei-probing', '/gemini/bei-probing'], async (req: Request, res: Response) => {
+  try {
+    const { rawExperience, targetCompany, answeredProbes, currentQuestions, mode } = req.body;
+    if (!rawExperience || !rawExperience.trim()) {
+      res.status(400).json({ error: '프로젝트 또는 경험 메모를 입력해주세요.' });
+      return;
+    }
+
+    const isResynthesize = mode === 'resynthesize' && answeredProbes && Object.keys(answeredProbes).length > 0;
+    let probeContext = '아직 꼬리질문 답변 전 단계';
+    if (isResynthesize) {
+      const qaPairs = (currentQuestions || []).map((q: any) => {
+        const ans = answeredProbes[q.id] || '(미답변)';
+        return `[질문 ${q.id}: ${q.category}] ${q.question}\n👉 지원자 답변: ${ans}`;
+      }).join('\n\n');
+      probeContext = `지원자가 3대 BEI 꼬리질문에 대해 추가 답변을 작성했습니다. 이 답변 내용을 STAR/PREP에 통합하십시오:\n\n${qaPairs}`;
+    }
+
+    const prompt = `
+지원자 프로젝트 메모:
+"""
+${rawExperience.trim()}
+"""
+목표 기업: "${targetCompany || '첨단 제조 대기업'}"
+컨텍스트:
+"""
+${probeContext}
+"""
+
+응답 형식 (JSON만 출력):
+{
+  "bei_probing_questions": [
+    {
+      "id": 1,
+      "category": "개인 기여도 및 독자 설계 검증",
+      "question": "개인 기여도 질문",
+      "reason": "검증 의도",
+      "suggested_placeholder": "예시 답변"
+    },
+    {
+      "id": 2,
+      "category": "제조 데이터 실무 특성 검증",
+      "question": "데이터 불균형/노이즈 처리 질문",
+      "reason": "검증 의도",
+      "suggested_placeholder": "예시 답변"
+    },
+    {
+      "id": 3,
+      "category": "현장 제약조건 및 Takt Time 검증",
+      "question": "추론 속도 및 Takt Time 질문",
+      "reason": "검증 의도",
+      "suggested_placeholder": "예시 답변"
+    }
+  ],
+  "experience_synthesis": {
+    "project_title": "공학적으로 재정의한 프로젝트 명칭",
+    "key_technologies": ["핵심 기술 키워드 5~7개"],
+    "applied_points": ["반영된 핵심 포인트 3가지"],
+    "star_resume": {
+      "situation": "Situation",
+      "task": "Task",
+      "action": "Action",
+      "result": "Result"
+    },
+    "prep_speech": {
+      "point": "두괄식 결론",
+      "reason": "기술 채택 이유",
+      "example": "문제 해결 사례",
+      "point_summary": "기여 포부"
+    }
+  },
+  "critic_feedback": "수석 면접관 총평"
+}
+`;
+
+    const parsed = await generateManufacturingJson(prompt);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('BEI Probing Error:', error);
+    res.status(500).json({ error: error.message || 'BEI 검증 중 오류가 발생했습니다.' });
+  }
+});
+
+// 4. Interview Questions API
+app.post(['/api/gemini/interview-questions', '/gemini/interview-questions'], async (req: Request, res: Response) => {
+  try {
+    const { targetCompany, targetRole, techStack, projectBrief } = req.body;
+    const prompt = `
+대상 기업: "${targetCompany || '첨단 제조 기업'}", 지원 직무: "${targetRole || '제조DX'}", 기술 스택: "${techStack || 'Python, PLC'}", 프로젝트: "${projectBrief || '이상 탐지'}"
+위 사항에 맞춘 Tier 1, Tier 2, Tier 3 면접 문항을 생성하십시오.
+
+응답 형식 (JSON만 출력):
+{
+  "questions": [
+    {
+      "tier": "Tier 1 (설비 데이터/인프라)",
+      "topic": "주제",
+      "question": "구체적 질문",
+      "intent": "평가 의도",
+      "key_keywords": ["키워드1", "키워드2", "키워드3"]
+    },
+    {
+      "tier": "Tier 2 (모델링 및 현장 적용)",
+      "topic": "주제",
+      "question": "구체적 질문",
+      "intent": "평가 의도",
+      "key_keywords": ["키워드1", "키워드2", "키워드3"]
+    },
+    {
+      "tier": "Tier 3 (BEI 프로젝트 압박)",
+      "topic": "주제",
+      "question": "구체적 질문",
+      "intent": "평가 의도",
+      "key_keywords": ["키워드1", "키워드2", "키워드3"]
+    }
+  ]
+}
+`;
+    const parsed = await generateManufacturingJson(prompt);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('Interview Questions Error:', error);
+    res.status(500).json({ error: error.message || '면접 문항 생성 중 오류가 발생했습니다.' });
+  }
+});
+
+// 5. Mock Interview Answer Eval API
+app.post(['/api/gemini/mock-interview-eval', '/gemini/mock-interview-eval'], async (req: Request, res: Response) => {
+  try {
+    const { question, candidateAnswer, tier, keyKeywords } = req.body;
+    if (!candidateAnswer || !question) {
+      res.status(400).json({ error: '질문과 지원자 답변을 입력해주세요.' });
+      return;
+    }
+
+    const prompt = `
+질문: "${question}", 필수 키워드: ${JSON.stringify(keyKeywords || [])}
+지원자 답변:
+"""
+${candidateAnswer.trim()}
+"""
+채점 점수(0~100), 강점, 약점, 사용/누락 키워드, 모범 답변을 JSON으로 작성하십시오.
+
+응답 형식 (JSON만 출력):
+{
+  "score": 85,
+  "verdict": "한 줄 판정",
+  "strengths": ["강점 2가지"],
+  "weaknesses": ["약점 2가지"],
+  "used_keywords": ["사용한 키워드"],
+  "missed_keywords": ["누락 키워드"],
+  "architect_critique": "면접관 코칭 피드백",
+  "model_answer": "1분 모범 구두 답변"
+}
+`;
+    const parsed = await generateManufacturingJson(prompt);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('Mock Interview Eval Error:', error);
+    res.status(500).json({ error: error.message || '답변 평가 중 오류가 발생했습니다.' });
+  }
+});
+
+// 6. AX Trend Brief API
+app.post(['/api/gemini/ax-trend-speech', '/gemini/ax-trend-speech'], async (req: Request, res: Response) => {
+  try {
+    const { targetCompany, industrySector, projectSummary } = req.body;
+    const prompt = `
+목표 기업: "${targetCompany || '글로벌 제조 기업'}", 산업 분야: "${industrySector || '첨단 제조 공정'}", 프로젝트: "${projectSummary || '센서 데이터 이상 탐지'}"
+맞춤형 제조DX/AX 트렌드 3가지와 1분 스피치 대본을 작성하십시오.
+
+응답 형식 (JSON만 출력):
+{
+  "industry_trends": [
+    {
+      "trend_name": "트렌드명",
+      "core_content": "기술 변화 설명",
+      "plant_application": "기대 효과"
+    }
+  ],
+  "one_minute_pitch": {
+    "title": "1분 기술 피치",
+    "script": "스피치 대본 전문",
+    "highlight_keywords": ["키워드1", "키워드2"],
+    "delivery_tips": "발화 코칭 팁"
+  }
+}
+`;
+    const parsed = await generateManufacturingJson(prompt);
+    res.json(parsed);
+  } catch (error: any) {
+    console.error('AX Trend Error:', error);
+    res.status(500).json({ error: error.message || '트렌드 생성 중 오류가 발생했습니다.' });
+  }
+});
+
+// Vercel Serverless Function 내보내기
+export default app;
